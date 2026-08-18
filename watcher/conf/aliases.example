@@ -1,0 +1,7 @@
+# OpenCode watcher aliases
+# Format: <alias> <tmux-target> <project-path>
+# Aliases are canonical. If a pane disappears or tmux restarts,
+# the watcher reports the alias as missing — it never remaps an alias
+# to an unrelated pane. Update this file only with user approval.
+feaon opencode-work:0.0 /home/__USER__/projects/personal/Feaon-ldp-v2
+qvak opencode-work:0.1 /home/__USER__/projects/personal/qvak-portfolio

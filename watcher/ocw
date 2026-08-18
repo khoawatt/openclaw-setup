@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+# ocw — OpenCode watcher CLI (zero-LLM control surface)
+# Subcommands: status, show, send, monitor, start, stop, restart,
+#              health, logs, notify-test
+set -u
+
+# shellcheck disable=SC1091
+. "$(dirname "$0")/ocw-lib.sh"
+
+usage() {
+  cat <<'EOF'
+ocw — OpenCode tmux watcher CLI
+
+  ocw status [alias]             Show monitoring summary (global mode + per-pane)
+  ocw show <alias> [lines]       Show recent output tail from an OpenCode pane
+  ocw send <alias> <text...>     SEND a message into the pane (explicit authorization)
+  ocw monitor status             Show current mode + per-pane toggles
+  ocw monitor on [duration]      Force active monitoring (e.g. "2h" or "30m"; default indefinite)
+  ocw monitor off                Disable active polling (status still works)
+  ocw monitor auto               Return to AUTO (default)
+  ocw monitor <alias> on|off     Toggle monitoring for one pane
+  ocw start | stop | restart     Manage the watcher daemon
+  ocw health                     One-shot health check (also called by cron)
+  ocw logs [n]                   Tail watcher log (default 30 lines)
+  ocw notify-test                Send a test Telegram notification
+EOF
+}
+
+cmd_status() {
+  local mode; mode=$(mode_get)
+  local until_ts; until_ts=$(mode_until_get)
+  local hp=dead
+  [ -f "$HEARTBEAT_FILE" ] && { local hb; hb=$(cat "$HEARTBEAT_FILE"); [ $(( $(now) - hb )) -lt 300 ] && hp=alive; }
+  local mode_str
+  case "$mode" in
+    on)  mode_str="ON";  [ "$until_ts" -gt 0 ] && mode_str="ON (until $(date -d @"$until_ts" '+%H:%M'))";;
+    off) mode_str="OFF";;
+    *)   mode_str="AUTO";;
+  esac
+
+  printf 'Monitoring mode : %s\n' "$mode_str"
+  printf 'Watcher daemon  : %s (pid %s)\n' "$hp" "$(cat "$PID_FILE" 2>/dev/null || echo -)"
+
+  # optionally restrict to one alias
+  local only="${1:-}"
+  while read -r alias target path; do
+    [ -z "$alias" ] && continue
+    [ -n "$only" ] && [ "$alias" != "$only" ] && continue
+    local en st pid_ok
+    en=$(enabled_get "$alias")
+    st=$(state_get "$alias" state UNKNOWN)
+    if pane_exists "$target"; then
+      pid_ok="$(pane_pid "$target")"
+      printf '  %-7s %-4s pane=OK pid=%s state=%s\n' "$alias" "$([ "$en" = 1 ] && echo 'ON' || echo 'off')" "$pid_ok" "$st"
+    else
+      printf '  %-7s %-4s pane=MISSING state=%s\n' "$alias" "$([ "$en" = 1 ] && echo 'ON' || echo 'off')" "$st"
+    fi
+  done < <(aliases_list)
+}
+
+cmd_show() {
+  local alias="$1" lines="${2:-35}"
+  local target; target=$(alias_target "$alias") || { echo "unknown alias: $alias"; exit 1; }
+  [ "$lines" -gt 200 ] && lines=200
+  if ! pane_exists "$target"; then
+    echo "pane $target not available"
+    exit 1
+  fi
+  capture_tail "$target" "$lines"
+}
+
+cmd_send() {
+  local alias="$1"; shift
+  [ $# -ge 1 ] || { echo "usage: ocw send <alias> <text>"; exit 1; }
+  local target; target=$(alias_target "$alias") || { echo "unknown alias: $alias"; exit 1; }
+  if [ "$(enabled_get "$alias")" != "1" ]; then
+    echo "warning: monitoring for $alias is OFF (send still allowed)"
+  fi
+  if ! pane_exists "$target"; then
+    echo "pane $target not available — cannot send"
+    exit 1
+  fi
+  local text="$*"
+  log SEND "$alias <= $text"
+  tmux send-keys -t "$target" -l -- "$text"
+  tmux send-keys -t "$target" Enter
+  echo "sent to $alias ($target): $text"
+}
+
+cmd_monitor() {
+  local arg="${1:-status}"
+  case "$arg" in
+    status)
+      cmd_status
+      ;;
+    on)
+      local dur="${2:-}"
+      if [ -n "$dur" ]; then
+        # duration like "2h" / "30m" / "90s"
+        local unit val secs
+        unit="${dur: -1}"
+        val="${dur%?}"
+        case "$unit" in
+          h) secs=$(( val * 3600 ));;
+          m) secs=$(( val * 60 ));;
+          s) secs=$val;;
+          *) echo "bad duration: $dur (use e.g. 2h, 30m, 90s)"; exit 1;;
+        esac
+        printf '%s\n' "$(( $(now) + secs ))" > "$MODE_UNTIL_FILE"
+        log MODE "temporary ON for $dur"
+      fi
+      mode_set on
+      echo "mode -> ON"
+      ;;
+    off)
+      rm -f "$MODE_UNTIL_FILE"
+      mode_set off
+      echo "mode -> OFF"
+      ;;
+    auto)
+      rm -f "$MODE_UNTIL_FILE"
+      mode_set auto
+      echo "mode -> AUTO"
+      ;;
+    *)
+      # per-pane toggle: monitor <alias> on|off
+      local alias="$arg" sw="${2:-}"
+      alias_exists "$alias" || { echo "unknown alias: $alias"; exit 1; }
+      case "$sw" in
+        on)  enabled_set "$alias" 1; echo "$alias monitoring -> ON";  log MODE "$alias monitoring ON";;
+        off) enabled_set "$alias" 0; echo "$alias monitoring -> OFF"; log MODE "$alias monitoring OFF";;
+        *)   echo "usage: ocw monitor <alias> on|off"; exit 1;;
+      esac
+      ;;
+  esac
+}
+
+cmd_start() {
+  if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    echo "already running (pid $(cat "$PID_FILE"))"
+    exit 0
+  fi
+  rm -f "$PID_FILE"
+  nohup bash "$OCW_DIR/ocw-daemon.sh" >> "$DAEMON_LOG" 2>&1 &
+  disown
+  sleep 1
+  if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    echo "started (pid $(cat "$PID_FILE"))"
+  else
+    echo "failed to start — see $DAEMON_LOG"
+    exit 1
+  fi
+}
+
+cmd_stop() {
+  [ -f "$PID_FILE" ] || { echo "not running"; exit 0; }
+  local pid; pid=$(cat "$PID_FILE")
+  if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid"
+    sleep 1
+    kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+    echo "stopped (pid $pid)"
+  else
+    echo "stale pid file removed"
+  fi
+  rm -f "$PID_FILE"
+}
+
+cmd_health() {
+  # Used by cron every 5 min. Restarts the daemon if dead, with backoff.
+  local now_ts; now_ts=$(now)
+  local hb=0
+  [ -f "$HEARTBEAT_FILE" ] && hb=$(cat "$HEARTBEAT_FILE")
+  local age=$(( now_ts - hb ))
+
+  local running=no
+  if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    running=yes
+  fi
+
+  if [ "$running" = "yes" ] && [ "$age" -lt "$HEARTBEAT_STALE" ]; then
+    echo "healthy (pid $(cat "$PID_FILE"), heartbeat ${age}s ago)"
+    exit 0
+  fi
+
+  # backoff: max ~6 restarts per 30 min
+  local wstart=0 count=0
+  [ -f "$RESTART_WINDOW_FILE" ] && wstart=$(cat "$RESTART_WINDOW_FILE")
+  [ -f "$RESTART_COUNT_FILE" ] && count=$(cat "$RESTART_COUNT_FILE")
+  if [ $(( now_ts - wstart )) -gt 1800 ]; then
+    wstart=$now_ts; count=0
+    printf '%s\n' "$wstart" > "$RESTART_WINDOW_FILE"
+  fi
+  if [ "$count" -ge 6 ]; then
+    echo "restart suppressed (backoff): $count restarts in window"
+    exit 0
+  fi
+
+  echo "$(( count + 1 ))" > "$RESTART_COUNT_FILE"
+  log HEALTH "restarting daemon (count=$((count+1)), heartbeat_age=${age}s, running=$running)"
+  cmd_start
+}
+
+cmd_logs() { tail -n "${1:-30}" "$LOG_FILE"; }
+
+cmd_notify_test() {
+  notify_mode "watcher online — test notification ✔ (daemon pid $(cat "$PID_FILE" 2>/dev/null || echo -))"
+  echo "test notification sent"
+}
+
+cmd="${1:-usage}"
+case "$cmd" in
+  status)     shift; cmd_status "$@";;
+  show)       shift; cmd_show "$@";;
+  send)       shift; cmd_send "$@";;
+  monitor)    shift; cmd_monitor "$@";;
+  start)      cmd_start;;
+  stop)       cmd_stop;;
+  restart)    cmd_stop; cmd_start;;
+  health)     cmd_health;;
+  logs)       shift; cmd_logs "$@";;
+  notify-test) cmd_notify_test;;
+  help|-h|--help) usage;;
+  *)          usage; exit 1;;
+esac

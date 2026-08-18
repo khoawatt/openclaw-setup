@@ -1,0 +1,18 @@
+# ===== Secrets / live config — NEVER commit these =====
+# (these paths are relative to the DESTINATION ~/.openclaw when setup.sh
+#  copies templates; keep them ignored even if someone stages them here)
+openclaw.json
+conf/telegram.env
+exec-approvals.json
+watcher/conf/telegram.env
+
+# ===== Personal / ephemeral (never share) =====
+memory/
+*.log
+state/
+run/
+watcher/logs/
+watcher/state/
+watcher/run/
+.DS_Store
+*.swp

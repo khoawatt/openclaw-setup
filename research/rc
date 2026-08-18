@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+# rc — Research/Search stack helper for OpenClaw (zero-LLM deterministic layer)
+# Pure shell + curl + jq/python3. No LLM calls. No secrets in output/logs.
+#
+# Commands:
+#   rc status                 provider/fetch/browser/cache availability (no keys shown)
+#   rc provider               configured provider + fallback rule
+#   rc route "<query>"        deterministic strategy classification (quick|news|technical|recommendation)
+#   rc search "<query>" [--strategy S] [--live] [--max N]
+#                             search with cache; primary=Brave (if key) else DuckDuckGo
+#   rc fetch "<url>"          raw fetch fallback (curl) -> stdout text
+#   rc cache list | clear | get <query> <strategy>
+#   rc set-provider brave|duckduckgo|auto
+#   rc test [--live]          bounded diagnostics
+#
+# Cache: ~/.openclaw/search-cache/  (metadata JSON + result JSON files)
+set -u
+
+CACHE_DIR="${SEARCH_CACHE_DIR:-$HOME/.openclaw/search-cache}"
+LOG="$CACHE_DIR/rc.log"
+mkdir -p "$CACHE_DIR/entries" "$CACHE_DIR/results" 2>/dev/null
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG" 2>/dev/null; }
+
+# ---------- helpers ----------
+now() { date +%s; }
+norm() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -s '[:space:]' ' ' | sed 's/^ *//;s/ *$//'; }
+h() { printf '%s' "$1" | sha1sum | cut -d' ' -f1; }
+
+# TTL (seconds) per strategy — spec §10
+ttl_for() {
+  case "${1:-quick}" in
+    news)            echo 900 ;;
+    current)         echo 3600 ;;
+    technical)       echo 43200 ;;
+    recommendation)  echo 3600 ;;
+    *)               echo 86400 ;;
+  esac
+}
+
+# Deterministic strategy routing — spec §4 (keyword-based, no LLM)
+route() {
+  local q; q="$(norm "$1")"
+  case "$q" in
+    *"today"*|*"latest"*|*"current"*|*"recent"*|*"this week"*|*"now"*|*"news"*|*"new release"*|*"breaking"*|*"announcement"*|*"right now"*)
+      echo news; return ;;
+  esac
+  case "$q" in
+    *" vs "*|*"vs "*|*" vs"*|*"best"*|*"recommend"*|*"worth"*|*"compare"*|*"reddit"*|*"opinion"*|*"experience"*|*"alternative"*|*"which"*|*"should i use"*)
+      echo recommendation; return ;;
+  esac
+  case "$q" in
+    *"doc"*|*"github"*|*"api"*|*"sdk"*|*"library"*|*"framework"*|*"config"*|*"install"*|*"version"*|*"compatib"*|*"how to"*|*"error"*|*"bug"*|*"plugin"*|*"openclaw"*|*"opencode"*|*"release"*)
+      echo technical; return ;;
+  esac
+  echo quick
+}
+
+# ---------- provider health (spec §11/13, no LLM) ----------
+brave_key_present() {
+  [ -n "${BRAVE_API_KEY:-}" ] && return 0
+  local cfg="$HOME/.openclaw/openclaw.json"
+  [ -f "$cfg" ] && grep -q '"apiKey"' "$cfg" && return 0
+  return 1
+}
+current_provider() {
+  openclaw config get tools.web.search.provider 2>/dev/null | tr -d '"' | tr -d ' \n'
+}
+ddg_reachable() { curl -s -o /dev/null -w '%{http_code}' --max-time 8 -A "Mozilla/5.0" "https://html.duckduckgo.com/html/?q=test" 2>/dev/null; }
+fetch_reachable() { curl -s -o /dev/null -w '%{http_code}' --max-time 8 "https://example.com" 2>/dev/null; }
+browser_ok() { openclaw browser status 2>/dev/null | grep -q "running: true"; }
+
+# ---------- search backends ----------
+brave_search() { # $1=query $2=max
+  local q="$1" max="${2:-8}" key t0 out
+  key="${BRAVE_API_KEY:-}"
+  if [ -z "$key" ]; then
+    key="$(python3 - "$HOME/.openclaw/openclaw.json" <<'PY' 2>/dev/null
+import json,sys
+try:
+    d=json.load(open(sys.argv[1]))
+    k=d.get('plugins',{}).get('entries',{}).get('brave',{}).get('config',{}).get('webSearch',{}).get('apiKey')
+    print(k or '')
+except Exception: pass
+PY
+)"
+  fi
+  [ -z "$key" ] && return 1
+  t0="$(now)"
+  out="$(curl -s --max-time 12 -H "X-Subscription-Token: $key" \
+    "https://api.search.brave.com/res/v1/web/search?q=$(printf '%s' "$q" | python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read()))')&count=$max" 2>/dev/null)"
+  [ -z "$out" ] && return 1
+  printf '%s' "$out" | python3 -c '
+import json,sys
+try:
+    d=json.load(sys.stdin)
+    for r in d.get("web",{}).get("results",[]):
+        print(json.dumps({"title":r.get("title",""),"url":r.get("url",""),"snippet":r.get("description",""),"age":r.get("age","")},ensure_ascii=False))
+except Exception: pass'
+  log "brave ok q=$q ms=$(( $(now) - t0 ))" 2>/dev/null || true
+  return 0
+}
+
+ddg_search() { # $1=query $2=max — html -> lite fallback, challenge-aware retry (key-free, unofficial)
+  local q="$1" max="${2:-8}" ua out i parsed
+  ua="Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0"
+  for i in 1 2 3 4; do
+    if [ $((i % 2)) -eq 1 ]; then
+      out="$(curl -s --max-time 12 -A "$ua" --data-urlencode "q=$q" --data "kl=us-en" "https://html.duckduckgo.com/html/" 2>/dev/null)"
+      parsed="$(printf '%s' "$out" | python3 -c '
+import sys,re,html,json,urllib.parse
+d=sys.stdin.read(); mx=int(sys.argv[1]); res=[]
+for m in re.finditer(r"<a[^>]*class=\"result__a\"[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>",d,re.S):
+    u=m.group(1)
+    mm=re.search(r"uddg=([^&]+)",u)
+    href=urllib.parse.unquote(mm.group(1)) if mm else u
+    if href.startswith("http"):
+        res.append({"title":html.unescape(re.sub("<[^>]+>","",m.group(2))).strip(),"url":href})
+sn=re.findall(r"<a[^>]*class=\"result__snippet\"[^>]*>(.*?)</a>",d,re.S)
+for i,s in enumerate(sn):
+    if i<len(res): res[i]["snippet"]=html.unescape(re.sub("<[^>]+>","",s)).strip()
+seen=set(); out=[]
+for r in res:
+    if r["url"] in seen: continue
+    seen.add(r["url"]); out.append(r)
+for r in out[:mx]: print(json.dumps(r,ensure_ascii=False))
+' "$max" 2>/dev/null)"
+    else
+      out="$(curl -s --max-time 12 -A "$ua" --data-urlencode "q=$q" "https://lite.duckduckgo.com/lite/" 2>/dev/null)"
+      parsed="$(printf '%s' "$out" | python3 -c '
+import sys,re,html,json,urllib.parse
+d=sys.stdin.read(); mx=int(sys.argv[1]); res=[]
+for m in re.finditer(r"<a[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>",d,re.S):
+    u=m.group(1); mm=re.search(r"uddg=([^&]+)",u)
+    href=urllib.parse.unquote(mm.group(1)) if mm else u
+    t=html.unescape(re.sub("<[^>]+>","",m.group(2))).strip()
+    if href.startswith("http") and "duckduckgo.com" not in href and t and not t.lower().startswith("settings"):
+        res.append({"title":t,"url":href})
+seen=set(); out=[]
+for r in res:
+    if r["url"] in seen: continue
+    seen.add(r["url"]); out.append(r)
+for r in out[:mx]: print(json.dumps(r,ensure_ascii=False))
+' "$max" 2>/dev/null)"
+    fi
+    if printf '%s' "$out" | grep -qi 'anomaly\|captcha\|challenge'; then
+      log "ddg challenge on attempt $i, backing off"
+      sleep 4
+      continue
+    fi
+    if [ -n "$parsed" ]; then
+      printf '%s\n' "$parsed"
+      return 0
+    fi
+    log "ddg attempt $i empty result"
+    sleep 2
+  done
+  echo "ERROR: DuckDuckGo unavailable (bot challenge after retries)" >&2
+  return 1
+}
+
+# generic search: primary (brave if key) -> fallback (ddg) — spec §3
+LAST_PROVIDER=""
+do_search() { # $1=query $2=max ; results -> stdout; provider name -> LAST_PROVIDER
+  local q="$1" max="${2:-8}" tmp
+  tmp="$CACHE_DIR/results/.tmp.$$"
+  if brave_key_present && brave_search "$q" "$max" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+    cat "$tmp"; rm -f "$tmp"; LAST_PROVIDER="brave"; return 0
+  fi
+  rm -f "$tmp"
+  if ddg_search "$q" "$max"; then
+    LAST_PROVIDER="duckduckgo"; return 0
+  fi
+  LAST_PROVIDER="none"; return 1
+}
+
+# ---------- cache ----------
+cache_get() { # $1=query $2=strategy -> prints file path if fresh, else nothing
+  local q="$1" s="${2:-quick}" key f ttl ts
+  key="$(h "$(norm "$q")")"
+  f="$CACHE_DIR/entries/$key.json"
+  [ -f "$f" ] || return 1
+  ttl="$(ttl_for "$s")"
+  ts="$(python3 -c "import json;print(json.load(open('$f')).get('ts',0))" 2>/dev/null)"
+  if [ $(( $(now) - ts )) -lt "$ttl" ]; then
+    printf '%s' "$f"; return 0
+  fi
+  return 1
+}
+cache_put() { # $1=query $2=strategy $3=provider $4=results_file
+  local q="$1" s="$2" prov="$3" rf="$4" key
+  key="$(h "$(norm "$q")")"
+  python3 - "$key" "$s" "$prov" "$rf" "$q" <<'PY'
+import json,time,os,sys
+k,s,p,rf,q=sys.argv[1:]
+d=os.path.expanduser('~/.openclaw/search-cache')
+json.dump({'query':q,'strategy':s,'provider':p,'ts':int(time.time()),'results':rf},
+          open(f'{d}/entries/{k}.json','w'))
+PY
+  log "cache put $s $q -> $key"
+}
+
+# ---------- commands ----------
+cmd_status() {
+  local cp ddg fr bw brave
+  cp="$(current_provider)"; [ -z "$cp" ] && cp="(auto-detect)"
+  ddg="$(ddg_reachable)"; [ "$ddg" = "200" ] && ddg="ok" || ddg="down($ddg)"
+  fr="$(fetch_reachable)"; [ "$fr" = "200" ] && fr="ok" || fr="down($fr)"
+  bw="no"; browser_ok && bw="yes"
+  brave_key_present && brave="configured" || brave="not-configured"
+  local nents; nents="$(ls "$CACHE_DIR/entries" 2>/dev/null | wc -l)"
+  cat <<EOF
+primary     : brave ($brave)
+fallback    : duckduckgo (key-free)
+active      : $cp
+ddg         : $ddg
+fetch       : $fr
+browser     : $bw
+cache       : $nents entr$( [ "$nents" = 1 ] && echo y || echo ies) @ $CACHE_DIR
+EOF
+}
+cmd_provider() {
+  local cp; cp="$(current_provider)"; [ -z "$cp" ] && cp="(auto-detect)"
+  echo "configured provider : $cp"
+  echo "primary (if key)    : brave"
+  echo "fallback            : duckduckgo (automatic on recoverable failure)"
+  echo "rule                : brave -> ddg ; never remove ddg"
+}
+cmd_test() {
+  local live="$1"
+  [ "$live" = "1" ] || live=0
+  echo "== provider config =="; cmd_provider
+  echo "== health =="; cmd_status
+  if [ "$live" = "1" ]; then
+    echo "== live probe (1 query) =="
+    local n; n="$(do_search "openclaw 2026" 3 | wc -l)"
+    echo "search via ${LAST_PROVIDER:-unknown}: $n result(s)"
+    echo "fetch probe status: $(fetch_reachable)"
+  else
+    echo "== live probes skipped (use 'rc test --live' for 1 query) =="
+  fi
+}
+
+# ---------- main ----------
+cmd="${1:-status}"; shift 2>/dev/null || true
+case "$cmd" in
+  status) cmd_status ;;
+  provider) cmd_provider ;;
+  route) [ $# -ge 1 ] && route "$1" || echo "usage: rc route <query>" ;;
+  search)
+    q="${1:-}"; [ -z "$q" ] && { echo "usage: rc search \"<query>\" [--strategy S] [--live] [--max N]"; exit 1; }
+    s="$(route "$q")"; max=8; live=0
+    while [ $# -gt 1 ]; do
+      case "$2" in --strategy) s="$3"; shift 2;; --live) live=1; shift;; --max) max="$3"; shift 2;; *) shift;; esac
+    done
+    if [ "$live" != "1" ]; then
+      c="$(cache_get "$q" "$s")"
+      if [ -n "$c" ]; then
+        echo "=== CACHE HIT (strategy=$s) ==="
+        python3 -c "import json;d=json.load(open('$c'));print('query:',d['query'],'| provider:',d['provider'],'| age(s):',__import__('time').time()-d['ts'])"
+        cat "$(python3 -c "import json;print(json.load(open('$c')).get('results',''))")" 2>/dev/null
+        exit 0
+      fi
+    fi
+    outfile="$CACHE_DIR/results/$(h "$(norm "$q")").json"
+    if ! do_search "$q" "$max" > "$outfile"; then
+      rm -f "$outfile"
+      echo "ERROR: all search providers failed for: $q" >&2
+      echo "hint: try again in a few minutes, or ask me to use the native web_search tool"
+      exit 1
+    fi
+    cache_put "$q" "$s" "$LAST_PROVIDER" "$outfile"
+    cat "$outfile"
+    ;;
+  fetch)
+    [ $# -ge 1 ] && curl -sL --max-time 15 -A "Mozilla/5.0" "$1" | python3 -c "
+import sys,re,html
+t=sys.stdin.read()
+t=re.sub(r'<(script|style)[^>]*>.*?</\1>',' ',t,flags=re.S|re.I)
+t=re.sub(r'<[^>]+>',' ',t)
+t=html.unescape(t)
+print(' '.join(t.split())[:8000])" || echo "fetch failed"
+    ;;
+  cache)
+    case "${1:-list}" in
+      list) ls "$CACHE_DIR/entries" 2>/dev/null | while read f; do python3 -c "import json,time;d=json.load(open('$CACHE_DIR/entries/$f'));print(f'{int(time.time()-d[\"ts\"])}s ago  {d[\"strategy\"]:14s} {d[\"provider\"]:9s} {d[\"query\"][:60]}')" 2>/dev/null; done ;;
+      clear) rm -f "$CACHE_DIR/entries/"* "$CACHE_DIR/results/"*; log "cache cleared"; echo "cache cleared" ;;
+      get) [ $# -ge 3 ] && { c="$(cache_get "$2" "$3")"; [ -n "$c" ] && cat "$c" || echo "miss"; } || echo "usage: rc cache get <query> <strategy>" ;;
+      *) echo "usage: rc cache list|clear|get" ;;
+    esac ;;
+  set-provider)
+    case "${1:-}" in
+      brave) brave_key_present && { openclaw config set tools.web.search.provider brave 2>&1 | tail -1; } || echo "no brave key configured; get one at https://brave.com/search/api/ (free tier)" ;;
+      duckduckgo) openclaw config set tools.web.search.provider duckduckgo 2>&1 | tail -1 ;;
+      auto) openclaw config unset tools.web.search.provider 2>&1 | tail -1 ;;
+      *) echo "usage: rc set-provider brave|duckduckgo|auto" ;;
+    esac ;;
+  test) cmd_test "${1:-0}" ;;
+  *) echo "usage: rc status|provider|route|search|fetch|cache|set-provider|test"; exit 1 ;;
+esac

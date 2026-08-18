@@ -1,0 +1,130 @@
+{
+  "wizard": {
+    "securityAcknowledgedAt": "__ISO_DATE__",
+    "lastRunAt": "__ISO_DATE__",
+    "lastRunVersion": "2026.7.1-2",
+    "lastRunCommand": "configure",
+    "lastRunMode": "local"
+  },
+  "agents": {
+    "defaults": {
+      "workspace": "/home/__USER__/.openclaw/workspace",
+      "models": {
+        "opencode/claude-opus-4-6": {
+          "alias": "Opus"
+        },
+        "opencode-go/kimi-k2.6": {},
+        "opencode/deepseek-v4-flash-free": {}
+      },
+      "model": {
+        "primary": "opencode-go/deepseek-v4-flash"
+      }
+    }
+  },
+  "gateway": {
+    "mode": "local",
+    "auth": {
+      "mode": "token",
+      "token": "__GATEWAY_TOKEN__"
+    },
+    "port": 18789,
+    "bind": "loopback",
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": false
+    },
+    "controlUi": {
+      "allowInsecureAuth": true
+    },
+    "nodes": {
+      "denyCommands": [
+        "camera.snap",
+        "camera.clip",
+        "screen.record",
+        "contacts.add",
+        "calendar.add",
+        "reminders.add",
+        "sms.send",
+        "sms.search"
+      ]
+    }
+  },
+  "session": {
+    "dmScope": "per-channel-peer"
+  },
+  "tools": {
+    "profile": "coding",
+    "web": {
+      "search": {
+        "provider": "brave"
+      }
+    }
+  },
+  "plugins": {
+    "entries": {
+      "opencode": {
+        "enabled": true
+      },
+      "telegram": {
+        "enabled": true
+      },
+      "opencode-go": {
+        "enabled": true
+      },
+      "brave": {
+        "enabled": true,
+        "config": {
+          "webSearch": {
+            "apiKey": "__BRAVE_API_KEY__"
+          }
+        }
+      }
+    }
+  },
+  "auth": {
+    "profiles": {
+      "opencode:default": {
+        "provider": "opencode",
+        "mode": "api_key"
+      },
+      "opencode-go:default": {
+        "provider": "opencode-go",
+        "mode": "api_key"
+      }
+    }
+  },
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "groups": {
+        "*": {
+          "requireMention": true
+        }
+      },
+      "botToken": "__TELEGRAM_BOT_TOKEN__"
+    }
+  },
+  "skills": {
+    "install": {
+      "nodeManager": "npm"
+    }
+  },
+  "hooks": {
+    "internal": {
+      "entries": {
+        "session-memory": {
+          "enabled": true
+        }
+      }
+    }
+  },
+  "meta": {
+    "lastTouchedVersion": "2026.7.1-2",
+    "lastTouchedAt": "__ISO_DATE__"
+  },
+  "commands": {
+    "ownerAllowFrom": [
+      "telegram:__OWNER_TELEGRAM_ID__"
+    ]
+  }
+}
