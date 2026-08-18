@@ -88,6 +88,34 @@ step_research() {
   say "research stack installed. Test: rc status"
 }
 
+step_workspace() {
+  # Instruct pack: makes a reinstalled OpenClaw understand this machine.
+  say "Install workspace instruct pack -> $OCW_HOME/workspace"
+  mkdir -p "$OCW_HOME/workspace"
+  cp "$REPO_DIR/ONBOARD.md" "$OCW_HOME/workspace/ONBOARD.md"
+  for f in AGENTS.md SOUL.md TOOLS.md HEARTBEAT.md RESEARCH.md; do
+    [ -f "$REPO_DIR/workspace/$f" ] && cp "$REPO_DIR/workspace/$f" "$OCW_HOME/workspace/$f"
+  done
+  # Personal files: only if missing (never overwrite existing identity/memory)
+  [ -f "$REPO_DIR/workspace/USER.md.example" ] && [ ! -f "$OCW_HOME/workspace/USER.md" ] \
+    && cp "$REPO_DIR/workspace/USER.md.example" "$OCW_HOME/workspace/USER.md"
+  [ -f "$REPO_DIR/workspace/IDENTITY.md.example" ] && [ ! -f "$OCW_HOME/workspace/IDENTITY.md" ] \
+    && cp "$REPO_DIR/workspace/IDENTITY.md.example" "$OCW_HOME/workspace/IDENTITY.md"
+  say "workspace pack installed. First run: read ONBOARD.md + research/RESEARCH.md"
+}
+
+step_memory_restore() {
+  # Optional: restore personal memory from a backup archive.
+  if [ -n "${MEMORY_BACKUP:-}" ] && [ -f "$MEMORY_BACKUP" ]; then
+    say "Restoring memory from $MEMORY_BACKUP"
+    mkdir -p "$OCW_HOME/workspace"
+    tar -xzf "$MEMORY_BACKUP" -C "$OCW_HOME/workspace/"
+    say "memory restored from $MEMORY_BACKUP"
+  else
+    echo "  (no MEMORY_BACKUP given — run scripts/backup-memory.sh on your old machine to create one)"
+  fi
+}
+
 step_browser_check() {
   say "Browser check (optional): openclaw browser status"
   echo "  If missing WSL libs: sudo apt-get install -y libnspr4 libnss3 libasound2"
@@ -99,6 +127,8 @@ main() {
   step_openclaw_json
   step_watcher
   step_research
+  step_workspace
+  step_memory_restore
   step_browser_check
   say "Done. Next: run 'openclaw gateway restart' if the gateway already exists."
 }
