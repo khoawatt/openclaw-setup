@@ -2,6 +2,12 @@
 
 This folder is home. Treat it that way.
 
+## Machine Context (read this first)
+
+Read `ONBOARD.md` in this workspace — it explains what this machine runs
+(watcher aliases feaon/qvak, research stack `rc`, project layout) and the hard
+boundaries. Also read `research/RESEARCH.md` for search-stack operating rules.
+
 ## First Run
 
 If `BOOTSTRAP.md` exists, that's your birth certificate. Follow it, figure out who you are, then delete it. You won't need it again.
