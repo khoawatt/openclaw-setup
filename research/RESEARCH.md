@@ -1,6 +1,6 @@
 # RESEARCH.md — Operating Rules: Research/Search Stack
 
-_Applies to this agent (main session). Implements `openclaw-research-search-stack.md` (§15 persistence)._
+_Applies to this agent (main session). Full spec: `docs/openclaw-research-search-stack.md` (repo); local copy installed to `research/openclaw-research-search-stack.md` by setup.sh (§15 persistence)._
 
 ## Stack layout
 

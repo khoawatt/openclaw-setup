@@ -84,6 +84,7 @@ step_research() {
   mkdir -p "$OCW_HOME/workspace/research"
   cp "$REPO_DIR/research/rc" "$OCW_HOME/workspace/research/"
   cp "$REPO_DIR/research/RESEARCH.md" "$OCW_HOME/workspace/"
+  cp "$REPO_DIR/docs/openclaw-research-search-stack.md" "$OCW_HOME/workspace/research/" 2>/dev/null
   chmod +x "$OCW_HOME/workspace/research/rc"
   say "research stack installed. Test: rc status"
 }
