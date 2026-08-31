@@ -15,7 +15,7 @@ Unacceptable behavior includes harassment, trolling, insulting comments, and pub
 
 ## Enforcement
 
-Report unacceptable behavior by opening an issue or contacting the maintainer at [@Akbi47](https://github.com/Akbi47).
+Report unacceptable behavior by opening an issue or contacting the maintainer at [@khoawatt](https://github.com/khoawatt).
 
 ## Attribution
 

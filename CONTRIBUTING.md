@@ -8,7 +8,7 @@ Thank you for your interest in contributing!
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/Akbi47/openclaw-setup.git
+   git clone https://github.com/khoawatt/openclaw-setup.git
    cd openclaw-setup
    ```
 
@@ -47,4 +47,4 @@ See [SECURITY.md](SECURITY.md).
 
 ## Author & Maintainer
 
-* **Akbi47** ([@Akbi47](https://github.com/Akbi47)) — Author & Maintainer
+* **Quách Võ Anh Khoa** ([@khoawatt](https://github.com/khoawatt)) — Author & Maintainer

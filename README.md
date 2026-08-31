@@ -125,7 +125,7 @@ Mọi đóng góp đều được hoan nghênh. Vui lòng xem [CONTRIBUTING.md](
 
 ## Tác giả & Contributors
 
-* **Akbi47** ([@Akbi47](https://github.com/Akbi47)) — Author & Maintainer
+* **Quách Võ Anh Khoa** ([@khoawatt](https://github.com/khoawatt)) — Author & Maintainer
 
 ---
 
