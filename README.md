@@ -114,3 +114,27 @@ Run `bash scripts/verify-no-secrets.sh` before any push.
   (key-free). Chain rule: `brave -> duckduckgo`; never remove DDG.
 - Cache: `~/.openclaw/search-cache/` (news 15m / current 1h / technical 12h / quick 24h).
 - Full operating rules: `research/RESEARCH.md`.
+
+---
+
+## Đóng góp (Contributing)
+
+Mọi đóng góp đều được hoan nghênh. Vui lòng xem [CONTRIBUTING.md](CONTRIBUTING.md) và [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+
+---
+
+## Tác giả & Contributors
+
+* **Akbi47** ([@Akbi47](https://github.com/Akbi47)) — Author & Maintainer
+
+---
+
+## Giấy phép (License)
+
+Dự án được phân phối dưới giấy phép **MIT License**. Xem [LICENSE](LICENSE).
+
+---
+
+## Bảo mật (Security)
+
+Xem [SECURITY.md](SECURITY.md) để báo cáo lỗ hổng. Không mở issue công khai cho vấn đề bảo mật.
